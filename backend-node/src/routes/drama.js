@@ -3,6 +3,7 @@ const propService = require('../services/propService');
 const response = require('../response');
 const dramaExportService = require('../services/dramaExportService');
 const dramaImportService = require('../services/dramaImportService');
+const logService = require('../services/logService');
 
 function createDrama(db, log) {
   return (req, res) => {
@@ -12,6 +13,13 @@ function createDrama(db, log) {
     }
     try {
       const drama = dramaService.createDrama(db, log, body);
+      logService.logOperation(db, log, {
+        operation: '创建剧集',
+        entity_type: 'drama',
+        entity_id: drama?.id,
+        entity_name: body.title,
+        ip: logService.parseIp(req),
+      });
       response.created(res, drama);
     } catch (err) {
       log.error('Create drama failed', { error: err.message, stack: err.stack });
@@ -55,14 +63,34 @@ function updateDrama(db, log) {
   return (req, res) => {
     const drama = dramaService.updateDrama(db, log, req.params.id, req.body || {});
     if (!drama) return response.notFound(res, '剧本不存在');
+    logService.logOperation(db, log, {
+      operation: '更新剧集',
+      entity_type: 'drama',
+      entity_id: req.params.id,
+      entity_name: drama.title || req.body?.title,
+      ip: logService.parseIp(req),
+    });
     response.success(res, drama);
   };
 }
 
 function deleteDrama(db, log) {
   return (req, res) => {
+    // 获取剧集名用于日志（在删除前读取）
+    let dramaName = '';
+    try {
+      const d = db.prepare('SELECT title FROM dramas WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+      if (d) dramaName = d.title;
+    } catch (_) {}
     const ok = dramaService.deleteDrama(db, log, req.params.id);
     if (!ok) return response.notFound(res, '剧本不存在');
+    logService.logOperation(db, log, {
+      operation: '删除剧集',
+      entity_type: 'drama',
+      entity_id: req.params.id,
+      entity_name: dramaName,
+      ip: logService.parseIp(req),
+    });
     response.success(res, { message: '删除成功' });
   };
 }
@@ -111,6 +139,14 @@ function saveEpisodes(db, log) {
     if (!Array.isArray(body.episodes)) return response.badRequest(res, 'episodes 必填且为数组');
     const ok = dramaService.saveEpisodes(db, log, req.params.id, body);
     if (!ok) return response.notFound(res, '剧本不存在');
+    const episodeTitles = body.episodes.map((e) => e.title || `第${e.episode_number}集`).join('、');
+    logService.logOperation(db, log, {
+      operation: '保存集数剧本',
+      entity_type: 'drama',
+      entity_id: req.params.id,
+      entity_name: `保存 ${body.episodes.length} 集：${episodeTitles}`,
+      ip: logService.parseIp(req),
+    });
     response.success(res, { message: '保存成功' });
   };
 }
@@ -271,9 +307,31 @@ function generateStoryboard(db, log) {
         include_narration: body.include_narration,
         universal_omni_storyboard: body.universal_omni_storyboard,
       });
+      // 获取集数标题以便日志记录
+      let episodeName = '第' + req.params.episode_id + '集';
+      try {
+        const ep = db.prepare('SELECT title, episode_number FROM episodes WHERE id = ?').get(req.params.episode_id);
+        if (ep) episodeName = '第' + ep.episode_number + '集' + (ep.title ? ' ' + ep.title : '');
+      } catch (_) {}
+      logService.logOperation(db, log, {
+        operation: '生成分镜',
+        entity_type: 'storyboard',
+        entity_id: req.params.episode_id,
+        entity_name: episodeName,
+        ip: logService.parseIp(req),
+      });
       response.success(res, resData);
     } catch (err) {
       log.error('Generate storyboard failed', { error: err.message });
+      logService.logOperation(db, log, {
+        operation: '生成分镜失败',
+        entity_type: 'storyboard',
+        entity_id: req.params.episode_id,
+        entity_name: '第' + req.params.episode_id + '集',
+        level: 'error',
+        error_message: err.message,
+        ip: logService.parseIp(req),
+      });
       response.internalError(res, err.message || '生成分镜失败');
     }
   };

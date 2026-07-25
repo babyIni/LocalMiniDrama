@@ -36,6 +36,7 @@
   },
   "dmg": {
     "title": "${productName} Lite ${version}",
-    "artifactName": "${productName}-Lite-${version}-mac-${arch}.dmg"
+    "artifactName": "${productName}-Lite-${version}-mac-${arch}.dmg",
+    "background": "background.tiff"
   }
 }

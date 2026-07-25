@@ -3,6 +3,7 @@ const aiConfigService = require('./aiConfigService');
 const { applyDeepSeekChatOptions } = require('./deepseekConfig');
 const https = require('https');
 const http = require('http');
+const logService = require('./logService');
 
 /**
  * 非流式 POST，发送 JSON body，等待完整 HTTP 响应后返回。
@@ -350,9 +351,35 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
   const content = res.body;
   const elapsedMs = Date.now() - startMs;
+  const reqDetail = { url, method: 'POST', body_preview: JSON.stringify(body).slice(0, 500) };
   if (!content) {
+    logService.logAiModelCall(db, log, {
+      service_type: serviceType || 'text',
+      model,
+      provider: config.provider || '',
+      status: 'failed',
+      error_message: 'AI 返回内容为空',
+      duration_ms: elapsedMs,
+      entity_type: options.entity_type,
+      entity_id: options.entity_id,
+      request_detail: reqDetail,
+      response_detail: { status: 'empty_response' },
+    });
     throw new Error('AI 返回内容为空');
   }
+  logService.logAiModelCall(db, log, {
+    service_type: serviceType || 'text',
+    model,
+    provider: config.provider || '',
+    prompt_summary: (userPrompt || '').slice(0, 120),
+    status: 'completed',
+    duration_ms: elapsedMs,
+    tokens_used: null,
+    entity_type: options.entity_type,
+    entity_id: options.entity_id,
+    request_detail: reqDetail,
+    response_detail: { status: 'completed', body_preview: content.slice(0, 500) },
+  });
   log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs, text_preview: content.slice(0, 200) });
   return content;
 }
@@ -457,10 +484,36 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     }
   );
   const content = res.body;
+  const elapsedMs = Date.now() - startMs;
+  const aiReqDetail = { url, method: 'POST', body_preview: JSON.stringify(body).slice(0, 500) };
   if (!content) {
+    logService.logAiModelCall(db, log, {
+      service_type: serviceType || 'text',
+      model,
+      provider: config.provider || '',
+      status: 'failed',
+      error_message: 'AI 流式返回内容为空',
+      duration_ms: elapsedMs,
+      entity_type: options.entity_type,
+      entity_id: options.entity_id,
+      request_detail: aiReqDetail,
+      response_detail: { status: 'empty_response' },
+    });
     throw new Error('AI 返回内容为空');
   }
-  log.info('AI streamGenerateText done', { model, text_length: content.length, elapsed_ms: Date.now() - startMs });
+  log.info('AI streamGenerateText done', { model, text_length: content.length, elapsed_ms: elapsedMs });
+  logService.logAiModelCall(db, log, {
+    service_type: serviceType || 'text',
+    model,
+    provider: config.provider || '',
+    prompt_summary: (userPrompt || '').slice(0, 120),
+    status: 'completed',
+    duration_ms: elapsedMs,
+    entity_type: options.entity_type,
+    entity_id: options.entity_id,
+    request_detail: aiReqDetail,
+    response_detail: { status: 'completed', body_preview: content.slice(0, 500) },
+  });
   return content;
 }
 

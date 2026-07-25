@@ -1,5 +1,6 @@
 const aiConfigService = require('../services/aiConfigService');
 const response = require('../response');
+const logService = require('../services/logService');
 
 function list(db) {
   return (req, res) => {
@@ -42,6 +43,13 @@ function create(db, log, cfg) {
         ...body,
         model: body.model ?? [],
       });
+      logService.logOperation(db, log, {
+        operation: '添加 AI 配置',
+        entity_type: 'ai_config',
+        entity_id: config?.id,
+        entity_name: body.name,
+        ip: logService.parseIp(req),
+      });
       response.created(res, config);
     } catch (err) {
       log.errorw('Create AI config failed', { error: err.message });
@@ -67,6 +75,13 @@ function update(db, log, cfg) {
 
     const config = aiConfigService.updateConfig(db, log, id, body);
     if (!config) return response.notFound(res, '配置不存在');
+    logService.logOperation(db, log, {
+      operation: '更新 AI 配置',
+      entity_type: 'ai_config',
+      entity_id: id,
+      entity_name: config.name,
+      ip: logService.parseIp(req),
+    });
     response.success(res, config);
   };
 }
@@ -78,8 +93,21 @@ function remove(db, log, cfg) {
     }
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return response.badRequest(res, '无效的配置ID');
+    // 删除前获取配置名用于日志
+    let cfgName = '';
+    try {
+      const old = db.prepare('SELECT name FROM ai_service_configs WHERE id = ? AND deleted_at IS NULL').get(id);
+      if (old) cfgName = old.name;
+    } catch (_) {}
     const ok = aiConfigService.deleteConfig(db, log, id);
     if (!ok) return response.notFound(res, '配置不存在');
+    logService.logOperation(db, log, {
+      operation: '删除 AI 配置',
+      entity_type: 'ai_config',
+      entity_id: id,
+      entity_name: cfgName,
+      ip: logService.parseIp(req),
+    });
     response.success(res, { message: '删除成功' });
   };
 }

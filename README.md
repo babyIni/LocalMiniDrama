@@ -255,6 +255,8 @@ LocalMiniDrama/
 | 📋 | 参考图自由选择 | 生图时手动指定角色/场景参考 |
 | 📋 | 宫格图生成视频 | 多帧合图作为视频输入（部分模型已支持） |
 
+> 💡 **阿里云百炼个人 TokenPlan**：如果你使用阿里云百炼的 Token 计费套餐，仓库中已提供专属配置示例 `各大平台中转站配置/阿里云百炼TokenPlan.json`，支持千问（`qwen3.8-max-preview` 等）、万相（`wan2.7-image`）、HappyHorse（`happyhorse-1.1-t2v` 等）模型，详细说明见 [AI 配置指南](docs/configuration.md#阿里云百炼个人版-tokenplantoken-计费套餐)。
+
 > 认领功能或提建议 → [New Issue](https://github.com/xuanyustudio/LocalMiniDrama/issues/new)
 
 <details>

@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const aiConfigService = require('./aiConfigService');
+const logService = require('./logService');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
 const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const imageClient = require('./imageClient');
@@ -44,11 +45,17 @@ function resolveVideoProtocol(config, modelHint) {
   const explicit = String(config.api_protocol || '').trim();
   let protocol = explicit.toLowerCase() || inferVideoProtocol(provider);
   const baseLower = String(config.base_url || '').toLowerCase();
-  const modelLower = String(modelHint || '').toLowerCase();
+  const modelLower = String(modelHint || config.default_model || '').toLowerCase();
   if (!explicit && protocol === 'openai') {
     if (/api\.x\.ai(\/|$)/.test(baseLower)) protocol = 'xai';
     else if (/grok-imagine|grok.*video/.test(modelLower)) protocol = 'xai';
     else if (p === 'agnes' || /agnes-video|apihub\.agnes-ai\.com/i.test(baseLower)) protocol = 'agnes';
+  }
+  // TokenPlan：万相（图片）和 HappyHorse（视频）都走 DashScope 原生协议
+  if (baseLower.includes('token-plan')) {
+    if (/^wan/i.test(modelLower) || /^happyhorse/i.test(modelLower)) {
+      protocol = 'dashscope';
+    }
   }
   return protocol;
 }
@@ -1495,6 +1502,8 @@ async function callDashScopeVideoApi(config, log, opts) {
     last_frame_url,
     reference_urls,
     duration,
+    aspect_ratio,
+    resolution,
     files_base_url,
     storage_local_path,
     video_gen_id,
@@ -1592,6 +1601,23 @@ async function callDashScopeVideoApi(config, log, opts) {
       model,
       input: { prompt: prompt || '', reference_urls: refs },
       parameters: { prompt_extend: true },
+    };
+  } else if (/^happyhorse-/i.test(model)) {
+    url = base + DASHSCOPE_VIDEO_GENERATION;
+    // DashScope HappyHorse 分辨率必须为 720P 或 1080P（大写 P）
+    let dashRes = (resolution || '720p').toString().trim();
+    if (/^1080/i.test(dashRes)) dashRes = '1080P';
+    else if (/^720/i.test(dashRes)) dashRes = '720P';
+    else dashRes = '720P';
+    body = {
+      model,
+      input: { prompt: prompt || '' },
+      parameters: {
+        resolution: dashRes,
+        ratio: aspect_ratio || '16:9',
+        duration: dur,
+        watermark: false,
+      },
     };
   } else {
     return { error: '????????????: ' + model };
@@ -3457,6 +3483,45 @@ async function callVideoApi(db, log, opts) {
     throw new Error('???????????AI ?????? video ?????????');
   }
   const model = getModelFromConfig(config, preferredModel);
+
+  // ==== TokenPlan 硬拦截：HappyHorse 视频强行走 DashScope 异步协议 ====
+  const tpBaseUrl = String(config.base_url || '').toLowerCase();
+  const tpModel = String(model || '').toLowerCase();
+  if (tpBaseUrl.includes('token-plan') && tpModel.startsWith('happyhorse')) {
+    log.info('[TokenPlan] 检测到 HappyHorse 视频，直接走 DashScope 异步', { video_gen_id, model });
+    const dsResult = await callDashScopeVideoApi(config, log, {
+      prompt,
+      model,
+      image_url: opts.image_url,
+      first_frame_url: opts.first_frame_url,
+      last_frame_url: opts.last_frame_url,
+      reference_urls: opts.reference_urls,
+      duration,
+      aspect_ratio,
+      resolution,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      video_gen_id,
+    });
+    const tpReqDet = { url: (config.base_url || '').replace(/\/$/, '') + '/api/v1/services/aigc/video-generation/video-synthesis', method: 'POST', body_preview: JSON.stringify({ model, input: { prompt: (prompt || '').slice(0, 200) } }).slice(0, 500) };
+    const tpRespDet = { error: dsResult?.error || null, task_id: dsResult?.task_id || null, video_url: dsResult?.video_url || null };
+    logService.logAiModelCall(db, log, {
+      service_type: opts.service_type || 'video',
+      model,
+      provider: config.provider || '',
+      prompt_summary: (prompt || '').slice(0, 120),
+      status: dsResult?.error ? 'failed' : 'completed',
+      error_message: dsResult?.error || '',
+      duration_ms: 0,
+      entity_type: video_gen_id ? 'video_gen' : undefined,
+      entity_id: video_gen_id,
+      request_detail: tpReqDet,
+      response_detail: tpRespDet,
+    });
+    return dsResult;
+  }
+  // ==== TokenPlan 硬拦截结束 ====
+
   const provider = (config.provider || '').toLowerCase();
   const protocol = resolveVideoProtocol(config, preferredModel);
   if (db && opts.drama_id && VIDEO_PROTOCOLS_SUPPORT_SD2_ASSET_SCHEME.has(protocol)) {
@@ -3514,8 +3579,36 @@ async function callVideoApi(db, log, opts) {
     endpoint: config.endpoint || '(auto)',
   });
 
+  // 日志辅助：在子调用返回后记录 AI 模型调用日志
+  const videoStartMs = Date.now();
+  const logVideoResult = (errMsg, reqDetail, respDetail) => {
+    logService.logAiModelCall(db, log, {
+      service_type: opts.service_type || 'video',
+      model,
+      provider: config.provider || '',
+      prompt_summary: (prompt || '').slice(0, 120),
+      status: errMsg ? 'failed' : 'completed',
+      error_message: errMsg || '',
+      duration_ms: Date.now() - videoStartMs,
+      entity_type: video_gen_id ? 'video_gen' : undefined,
+      entity_id: video_gen_id,
+      request_detail: reqDetail || undefined,
+      response_detail: respDetail || undefined,
+    });
+  };
+
+  // 为每个子调用构建请求详情辅助
+  const videoSubUrl = (ep) => {
+    const base = (config.base_url || '').replace(/\/$/, '');
+    const p = ep || config.endpoint || '/v1/video/create';
+    return base + (p.startsWith('/') ? p : '/' + p);
+  };
+  const vReqDet = (url, body) => ({ url, method: 'POST', body_preview: body ? JSON.stringify(body).slice(0, 500) : '' });
+  const vRespDet = (r) => r ? { error: r.error || null, video_url: r.video_url || null, task_id: r.task_id || null } : null;
+
   if (protocol === 'jimeng_ai_api') {
-    return callJimengAiApiVideo(config, log, {
+    const ur = videoSubUrl(config.endpoint || '/v1/videos/generations');
+    const result = await callJimengAiApiVideo(config, log, {
       prompt,
       model: preferredModel,
       duration: opts.duration,
@@ -3529,10 +3622,13 @@ async function callVideoApi(db, log, opts) {
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
     });
+    logVideoResult(result?.error, vReqDet(ur, { model: preferredModel, prompt }), vRespDet(result));
+    return result;
   }
 
   if (protocol === 'xai') {
-    return callXaiVideoApi(config, log, {
+    const ur = videoSubUrl(config.endpoint);
+    const result = await callXaiVideoApi(config, log, {
       prompt,
       model,
       duration: opts.duration,
@@ -3544,10 +3640,14 @@ async function callVideoApi(db, log, opts) {
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
     });
+    logVideoResult(result?.error, vReqDet(ur, { model, prompt }), vRespDet(result));
+    return result;
   }
 
   if (protocol === 'dashscope') {
-    return callDashScopeVideoApi(config, log, {
+    const dsBase = (config.base_url || '').replace(/\/$/, '');
+    const dsUrl = dsBase + (config.endpoint || '/api/v1/services/aigc/video-generation/video-synthesis');
+    const result = await callDashScopeVideoApi(config, log, {
       prompt,
       model,
       image_url: opts.image_url,
@@ -3555,14 +3655,20 @@ async function callVideoApi(db, log, opts) {
       last_frame_url: opts.last_frame_url,
       reference_urls: opts.reference_urls,
       duration: opts.duration,
+      aspect_ratio: opts.aspect_ratio,
+      resolution: opts.resolution,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
     });
+    logVideoResult(result?.error, vReqDet(dsUrl, { model, prompt }), vRespDet(result));
+    return result;
   }
 
   if (protocol === 'gemini') {
-    return callGeminiVideoApi(config, log, {
+    const gmBase = (config.base_url || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
+    const gmUrl = `${gmBase}/v1beta/models/${model}:predictLongRunning`;
+    const result = await callGeminiVideoApi(config, log, {
       prompt, model,
       duration: opts.duration,
       aspect_ratio,
@@ -3571,10 +3677,13 @@ async function callVideoApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
+    logVideoResult(result?.error, vReqDet(gmUrl, { model, prompt }), vRespDet(result));
+    return result;
   }
 
   if (protocol === 'vidu') {
-    return callViduVideoApi(config, log, {
+    const vu = videoSubUrl(config.endpoint || '/ent/v2/img2video');
+    const result = await callViduVideoApi(config, log, {
       prompt, model,
       duration: opts.duration,
       aspect_ratio,
@@ -3584,10 +3693,13 @@ async function callVideoApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
+    logVideoResult(result?.error, vReqDet(vu, { model, prompt }), vRespDet(result));
+    return result;
   }
 
   if (protocol === 'kling') {
-    return callKlingVideoApi(config, log, {
+    const ku = videoSubUrl(config.endpoint);
+    const result = await callKlingVideoApi(config, log, {
       prompt, model,
       duration: opts.duration,
       aspect_ratio,
@@ -3596,10 +3708,16 @@ async function callVideoApi(db, log, opts) {
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
     });
+    logVideoResult(result?.error, vReqDet(ku, { model, prompt }), vRespDet(result));
+    return result;
   }
 
   if (protocol === 'kling_omni') {
-    return callKlingOmniVideoApi(applyKlingOmniEnvOverrides(config), log, {
+    const cfgOmni = applyKlingOmniEnvOverrides(config);
+    const obase = (cfgOmni.base_url || 'https://api-beijing.klingai.com').replace(/\/$/, '');
+    const oep = cfgOmni.endpoint || '/v1/videos/omni-video';
+    const ou = obase + (oep.startsWith('/') ? oep : '/' + oep);
+    const result = await callKlingOmniVideoApi(cfgOmni, log, {
       prompt,
       model,
       duration: opts.duration,
@@ -3609,13 +3727,16 @@ async function callVideoApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
-      // 为将来可灵 Omni 也支持音色参考做准备（当前 Seedance 2.0 不走此分支）
       voice_reference_url: opts.voice_reference_url,
     });
+    logVideoResult(result?.error, vReqDet(ou, { model, prompt }), vRespDet(result));
+    return result;
   }
 
   if (protocol === 'volcengine_omni') {
-    return callVolcengineOmniVideoApi(config, log, {
+    const vb = (config.base_url || 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/$/, '');
+    const vu2 = vb + (config.endpoint || '/contents/generations/tasks');
+    const result = await callVolcengineOmniVideoApi(config, log, {
       prompt,
       model,
       duration: opts.duration,
@@ -3629,24 +3750,27 @@ async function callVideoApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
-      // 关键：把 callVideoApi 里自动注入的 Seedance 2.0 音色参考音频透传下去
       voice_reference_url: opts.voice_reference_url,
     });
+    logVideoResult(result?.error, vReqDet(vu2, { model, prompt }), vRespDet(result));
+    return result;
   }
 
-  // Veo3 protocol (api_protocol = 'veo3')
   if (protocol === 'veo3') {
-    return callVeo3VideoApi(config, log, {
+    const ve = videoSubUrl(config.endpoint || '/v1/video/create');
+    const result = await callVeo3VideoApi(config, log, {
       prompt, model,
       image_url: opts.image_url,
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
     });
+    logVideoResult(result?.error, vReqDet(ve, { model, prompt }), vRespDet(result));
+    return result;
   }
 
-  // Sora protocol (api_protocol = 'sora')
   if (protocol === 'sora') {
-    return callSoraVideoApi(config, log, {
+    const su = videoSubUrl(config.endpoint || '/v1/videos');
+    const result = await callSoraVideoApi(config, log, {
       prompt, model,
       duration: opts.duration,
       aspect_ratio,
@@ -3656,11 +3780,13 @@ async function callVideoApi(db, log, opts) {
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
     });
+    logVideoResult(result?.error, vReqDet(su, { model, prompt }), vRespDet(result));
+    return result;
   }
 
-  // Agnes Video V2.0 (api_protocol = 'agnes')
   if (protocol === 'agnes') {
-    return callAgnesVideoApi(db, config, log, {
+    const au = videoSubUrl(config.endpoint || '/videos');
+    const result = await callAgnesVideoApi(db, config, log, {
       prompt,
       model,
       duration: opts.duration,
@@ -3673,6 +3799,8 @@ async function callVideoApi(db, log, opts) {
       storage_local_path: opts.storage_local_path,
       video_gen_id: opts.video_gen_id,
     });
+    logVideoResult(result?.error, vReqDet(au, { model, prompt }), vRespDet(result));
+    return result;
   }
 
   const url = buildVideoUrl(config);
@@ -3775,6 +3903,7 @@ async function callVideoApi(db, log, opts) {
     has_last_frame: !!lastForApi,
     frame_count: (firstForApi ? 1 : 0) + (lastForApi ? 1 : 0),
   });
+  const reqDetailForVideo = { url, method: 'POST', body_preview: JSON.stringify(body).slice(0, 500) };
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -3784,6 +3913,7 @@ async function callVideoApi(db, log, opts) {
     body: JSON.stringify(body),
   });
   const raw = await res.text();
+  const mkRespDetail = () => ({ status_code: res.status, body_preview: (raw || '').slice(0, 500) });
   log.info('Video API raw response', { video_gen_id, status: res.status, raw: raw.slice(0, 1000) });
   if (!res.ok) {
     log.error('Video API failed', { status: res.status, body: raw.slice(0, 500) });
@@ -3795,6 +3925,7 @@ async function callVideoApi(db, log, opts) {
     } catch (_) {
       if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
     }
+    logVideoResult(errMsg, reqDetailForVideo, mkRespDetail());
     return { error: errMsg };
   }
   let data;
@@ -3802,7 +3933,9 @@ async function callVideoApi(db, log, opts) {
     data = JSON.parse(raw);
   } catch (e) {
     log.error('Video API response JSON parse failed', { video_gen_id, raw: raw.slice(0, 1000), parse_error: e.message });
-    return { error: '??????????: ' + e.message + ' | raw: ' + raw.slice(0, 200) };
+    const err = '??????????: ' + e.message + ' | raw: ' + raw.slice(0, 200);
+    logVideoResult(err, reqDetailForVideo, mkRespDetail());
+    return { error: err };
   }
   log.info('Video API parsed response', { video_gen_id, data: JSON.stringify(data).slice(0, 500) });
   const taskId = data.id || data.task_id || (data.data && data.data.id);
@@ -3810,14 +3943,18 @@ async function callVideoApi(db, log, opts) {
   const videoUrl = pickProxyVideoUrl(data);
   if (videoUrl) {
     log.info('Video API returned video_url directly', { video_gen_id, video_url: videoUrl });
+    logVideoResult(null, reqDetailForVideo, mkRespDetail());
     return { video_url: videoUrl };
   }
   if (taskId) {
     log.info('Video API returned task_id', { video_gen_id, task_id: taskId, status });
+    logVideoResult(null, reqDetailForVideo, mkRespDetail());
     return { task_id: taskId, status: status || 'processing' };
   }
   log.error('Video API: no task_id or video_url in response', { video_gen_id, data: JSON.stringify(data).slice(0, 500) });
-  return { error: '??? task_id ? video_url?????: ' + JSON.stringify(data).slice(0, 300) };
+  const errNoResult = '??? task_id ? video_url?????: ' + JSON.stringify(data).slice(0, 300);
+  logVideoResult(errNoResult, reqDetailForVideo, mkRespDetail());
+  return { error: errNoResult };
 }
 
 /**
@@ -3912,6 +4049,20 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       log.info('[poll] 发起查询', { video_gen_id: videoGenId, round: pollRound, url });
       const res = await fetch(url, { method: 'GET', headers });
       const raw = await res.text();
+      // 记录轮询 API 调用日志
+      logService.logAiModelCall(db, log, {
+        service_type: 'video_poll',
+        model: config.default_model || 'unknown',
+        provider: config.provider || '',
+        prompt_summary: `轮询任务 ${taskId}`,
+        status: res.ok ? 'completed' : 'failed',
+        error_message: res.ok ? '' : `HTTP ${res.status}`,
+        duration_ms: 0,
+        entity_type: 'video_gen',
+        entity_id: videoGenId,
+        request_detail: { url, method: 'GET' },
+        response_detail: { status_code: res.status, body_preview: raw.slice(0, 500) },
+      });
       const bodyLogged =
         pollLogBodyMax === Infinity
           ? raw

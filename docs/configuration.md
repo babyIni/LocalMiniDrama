@@ -95,6 +95,82 @@ API Key：sk-xxxxxxxxxxxxxxxx
 
 ---
 
+## 阿里云百炼个人版 TokenPlan（Token 计费套餐）
+
+阿里云百炼平台提供**个人 TokenPlan** 套餐，使用专属 Base URL 接入，按 Token 量计费而非按模型调用次数。它是 OpenAI 兼容接口，**不是 DashScope 原生协议**，配置时必须注意区分。
+
+### 套餐专属 Base URL
+
+```
+兼容 OpenAI 接口协议：https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+兼容 Anthropic 接口协议：https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic
+```
+
+> ⚠️ **关键：** 配置时服务商**不要选 "DashScope"**，而应选择 **"自定义"** 或 **"OpenAI 兼容"**（取决于前端界面显示的文字）。`api_protocol` 留空即可（默认走 OpenAI 兼容协议）。如果选了 DashScope 作为服务商，程序会使用 DashScope 原生 API 协议请求，但 TokenPlan 是 OpenAI 兼容协议，两者不兼容，导致无法正常工作。
+
+### 可用模型
+
+**文本生成（千问 Qwen 系列）：**
+| 模型名 | 说明 |
+|--------|------|
+| `qwen3.8-max-preview` | 文本生成、推理模型、视觉理解 |
+| `qwen3.7-plus` | 文本生成、推理模型、视觉理解 |
+| `qwen3.7-max` | 文本生成、推理模型 |
+| `qwen3.6-flash` | 文本生成、推理模型、视觉理解 |
+
+**图片生成（万相 Wan 系列）：**
+| 模型名 | 说明 |
+|--------|------|
+| `wan2.7-image` | 图片生成 |
+| `wan2.7-image-pro` | 图片生成（更高质量） |
+
+**视频生成（HappyHorse 系列）：**
+| 模型名 | 说明 |
+|--------|------|
+| `happyhorse-1.1-i2v` | 图片转视频 |
+| `happyhorse-1.1-t2v` | 文字转视频 |
+| `happyhorse-1.1-r2v` | 参考图转视频 |
+
+### 配置示例
+
+> ⚠️ **关键：** 文本模型使用 OpenAI 兼容协议，图片（万相）和视频（HappyHorse）使用 DashScope 原生协议。每类模型需要使用对应的 Base URL 和接口规范配置，不能混用。
+
+**文本生成配置：**
+```
+服务商：自定义 / OpenAI 兼容     ← 不要选 DashScope
+Base URL：https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+API Key：sk-xxxxxxxxxxxxxxxx
+模型：qwen3.7-plus
+接口规范：留空
+```
+
+**图片生成 / 分镜图生成配置：**
+```
+服务商：自定义 / OpenAI 兼容
+Base URL：https://token-plan.cn-beijing.maas.aliyuncs.com     ← 注意：不带 /compatible-mode/v1
+API Key：sk-xxxxxxxxxxxxxxxx
+模型：wan2.7-image
+接口规范：通义万象 DashScope
+提交端点：/api/v1/services/aigc/multimodal-generation/generation
+```
+
+**视频生成配置（HappyHorse，DashScope 异步协议）：**
+```
+服务商：自定义 / OpenAI 兼容
+Base URL：https://token-plan.cn-beijing.maas.aliyuncs.com     ← 不带 /compatible-mode/v1
+API Key：sk-xxxxxxxxxxxxxxxx
+模型：happyhorse-1.1-t2v
+接口规范：通义万象 DashScope
+提交端点：/api/v1/services/aigc/video-generation/video-synthesis
+```
+> ⚠️ HappyHorse 视频使用 DashScope 异步协议，请求会自动添加 `X-DashScope-Async: enable` 请求头。
+
+> 💡 仓库内提供了完整示例配置 JSON，位于 `各大平台中转站配置/阿里云百炼TokenPlan.json`，可在 AI 配置页**导入**后替换为你的 Key 即可使用。
+> 
+> ⚠️ **注意：** 本套餐使用独立的 Base URL 和计费体系，与常规的 DashScope 通义 API（`dashscope.aliyuncs.com`）互不通用，请勿混用 API Key。
+
+---
+
 ## 火山引擎 Volcengine（豆包）
 
 ### 申请 API Key

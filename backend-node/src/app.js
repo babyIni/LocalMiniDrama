@@ -36,8 +36,48 @@ function createApp() {
     })
   );
 
+  // API 请求日志中间件（自动记录所有 /api/ 请求的耗时与状态）
+  const logService = require('./services/logService');
   app.use((req, res, next) => {
     log.info(req.method, req.path);
+    // 只记录 /api/ 路径的请求
+    if (req.path.startsWith('/api/')) {
+      const start = Date.now();
+      const queryStr = req.url?.includes('?') ? req.url.split('?')[1] || '' : '';
+      // 尝试获取请求体片段（JSON 类型请求）
+      let reqBodySnippet = '';
+      try {
+        if (req.body && typeof req.body === 'object') {
+          const s = JSON.stringify(req.body).slice(0, 500);
+          reqBodySnippet = s;
+        }
+      } catch (_) {}
+      const origSend = res.json.bind(res);
+      res.json = function (body) {
+        const duration = Date.now() - start;
+        const statusCode = res.statusCode;
+        const level = statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info';
+        const errMsg = body?.error?.message || (statusCode >= 400 ? `HTTP ${statusCode}` : '');
+        const respBodySnippet = body ? JSON.stringify(body).slice(0, 500) : '';
+        setImmediate(() => {
+          try {
+            logService.logApiRequest(db, log, {
+              method: req.method,
+              path: req.path,
+              query: queryStr,
+              status_code: statusCode,
+              duration_ms: duration,
+              level,
+              error_message: errMsg,
+              ip: logService.parseIp(req),
+              request_body: reqBodySnippet,
+              response_body: respBodySnippet,
+            });
+          } catch (_) {}
+        });
+        return origSend(body);
+      };
+    }
     next();
   });
 

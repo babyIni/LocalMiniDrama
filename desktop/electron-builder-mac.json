@@ -41,6 +41,7 @@
   },
   "dmg": {
     "title": "${productName} ${version}",
-    "artifactName": "${productName}-${version}-mac-${arch}.dmg"
+    "artifactName": "${productName}-${version}-mac-${arch}.dmg",
+    "background": "background.tiff"
   }
 }

@@ -4,6 +4,7 @@ const response = require('../response');
 const characterLibraryService = require('../services/characterLibraryService');
 const storageLayout = require('../services/storageLayout');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
+const logService = require('../services/logService');
 
 function routes(db, cfg, log, uploadService) {
   return {
@@ -110,12 +111,30 @@ function routes(db, cfg, log, uploadService) {
           if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');
           return response.badRequest(res, out.error);
         }
+        // 获取角色名称
+        let charName = '';
+        try { const c = db.prepare('SELECT name FROM characters WHERE id = ?').get(req.params.id); if (c) charName = c.name; } catch (_) {}
+        logService.logOperation(db, log, {
+          operation: '生成角色图',
+          entity_type: 'character',
+          entity_id: req.params.id,
+          entity_name: charName,
+          ip: logService.parseIp(req),
+        });
         response.success(res, {
           message: '角色四视图生成任务已提交',
           image_generation: out.image_generation,
         });
       } catch (err) {
         log.error('characters generate-image', { error: err.message });
+        logService.logOperation(db, log, {
+          operation: '生成角色图失败',
+          entity_type: 'character',
+          entity_id: req.params.id,
+          level: 'error',
+          error_message: err.message,
+          ip: logService.parseIp(req),
+        });
         response.internalError(res, err.message);
       }
     },

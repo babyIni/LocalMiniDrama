@@ -518,6 +518,47 @@ function ensureAllColumns(database) {
       updated_at TEXT NOT NULL DEFAULT ''
     )`);
   } catch (_) {}
+
+  // --- api_logs（操作日志 + API 请求日志统一表） ---
+  try {
+    database.exec(`CREATE TABLE IF NOT EXISTS api_logs (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      log_type       TEXT NOT NULL DEFAULT 'operation',
+      level          TEXT NOT NULL DEFAULT 'info',
+      user_operation TEXT,
+      entity_type    TEXT,
+      entity_id      TEXT,
+      entity_name    TEXT,
+      method         TEXT,
+      path           TEXT,
+      status_code    INTEGER DEFAULT 0,
+      duration_ms    INTEGER DEFAULT 0,
+      error_message  TEXT,
+      ip             TEXT,
+      created_at     TEXT NOT NULL
+    )`);
+  } catch (_) {}
+  ensureColumns(database, 'api_logs', [
+    { name: 'log_type',       type: 'TEXT NOT NULL DEFAULT \'operation\'' },
+    { name: 'level',          type: 'TEXT NOT NULL DEFAULT \'info\'' },
+    { name: 'user_operation', type: 'TEXT' },
+    { name: 'entity_type',    type: 'TEXT' },
+    { name: 'entity_id',      type: 'TEXT' },
+    { name: 'entity_name',    type: 'TEXT' },
+    { name: 'method',         type: 'TEXT' },
+    { name: 'path',           type: 'TEXT' },
+    { name: 'status_code',    type: 'INTEGER DEFAULT 0' },
+    { name: 'duration_ms',    type: 'INTEGER DEFAULT 0' },
+    { name: 'error_message',  type: 'TEXT' },
+    { name: 'ip',             type: 'TEXT' },
+    { name: 'model_name',     type: 'TEXT' },
+    { name: 'provider_name',  type: 'TEXT' },
+    { name: 'request_summary', type: 'TEXT' },
+    { name: 'tokens_used',    type: 'INTEGER DEFAULT 0' },
+    { name: 'request_detail', type: 'TEXT' },
+    { name: 'response_detail', type: 'TEXT' },
+    { name: 'created_at',     type: 'TEXT NOT NULL' },
+  ]);
 }
 
 /** 对已打开的 database 执行迁移与兜底补列（供 app 启动时调用） */

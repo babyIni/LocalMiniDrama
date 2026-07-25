@@ -1,0 +1,81 @@
+[
+  {
+    "service_type": "text",
+    "provider": "",
+    "api_protocol": "",
+    "name": "阿里云百炼TokenPlan 文本生成",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-1234",
+    "model": [
+      "qwen3.8-max-preview",
+      "qwen3.7-plus",
+      "qwen3.7-max",
+      "qwen3.6-flash"
+    ],
+    "default_model": "qwen3.7-plus",
+    "endpoint": "",
+    "query_endpoint": "",
+    "priority": 0,
+    "is_default": true,
+    "is_active": true,
+    "settings": null
+  },
+  {
+    "service_type": "image",
+    "provider": "",
+    "api_protocol": "dashscope",
+    "name": "阿里云百炼TokenPlan 文生图",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com",
+    "api_key": "sk-1234",
+    "model": [
+      "wan2.7-image",
+      "wan2.7-image-pro"
+    ],
+    "default_model": "wan2.7-image",
+    "endpoint": "/api/v1/services/aigc/multimodal-generation/generation",
+    "query_endpoint": "",
+    "priority": 0,
+    "is_default": true,
+    "is_active": true,
+    "settings": null
+  },
+  {
+    "service_type": "storyboard_image",
+    "provider": "",
+    "api_protocol": "dashscope",
+    "name": "阿里云百炼TokenPlan 图生图（分镜图）",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com",
+    "api_key": "sk-1234",
+    "model": [
+      "wan2.7-image",
+      "wan2.7-image-pro"
+    ],
+    "default_model": "wan2.7-image",
+    "endpoint": "/api/v1/services/aigc/multimodal-generation/generation",
+    "query_endpoint": "",
+    "priority": 0,
+    "is_default": false,
+    "is_active": true,
+    "settings": null
+  },
+  {
+    "service_type": "video",
+    "provider": "",
+    "api_protocol": "dashscope",
+    "name": "阿里云百炼TokenPlan 视频 HappyHorse",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com",
+    "api_key": "sk-1234",
+    "model": [
+      "happyhorse-1.1-i2v",
+      "happyhorse-1.1-t2v",
+      "happyhorse-1.1-r2v"
+    ],
+    "default_model": "happyhorse-1.1-t2v",
+    "endpoint": "",
+    "query_endpoint": "",
+    "priority": 0,
+    "is_default": false,
+    "is_active": true,
+    "settings": null
+  }
+]

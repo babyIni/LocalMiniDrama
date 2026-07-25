@@ -44,6 +44,12 @@ const router = createRouter({
       name: 'media-library',
       component: () => import('@/views/MediaLibrary.vue'),
       meta: { title: '媒体素材库' }
+    },
+    {
+      path: '/logs',
+      name: 'logs',
+      component: () => import('@/views/SystemLogs.vue'),
+      meta: { title: '系统日志' }
     }
   ]
 })

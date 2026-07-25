@@ -27,6 +27,10 @@
                 <el-icon><MagicStick /></el-icon>
                 一键配置 Agnes
               </el-button>
+              <el-button type="success" plain @click="openOneKeyTokenplan">
+                <el-icon><MagicStick /></el-icon>
+                一键配置 TokenPlan
+              </el-button>
               <el-button type="info" plain @click="openOneKeyTongyi">
                 <el-icon><MagicStick /></el-icon>
                 一键配置通义
@@ -197,6 +201,11 @@
       <el-tab-pane label="SD2 资产管理" name="sd2_assets">
         <div class="tab-content">
           <Sd2AssetManagement :configs="list" @saved="loadList" />
+        </div>
+      </el-tab-pane>
+      <el-tab-pane label="系统日志" name="logs">
+        <div class="tab-content">
+          <LogViewer />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -1001,6 +1010,53 @@ input_reference = (图片文件，可选)</pre>
       </template>
     </el-dialog>
 
+    <!-- 一键配置 TokenPlan -->
+    <el-dialog
+      v-model="oneKeyTokenplanVisible"
+      title="一键配置阿里云百炼 TokenPlan"
+      width="520px"
+      :close-on-click-modal="false"
+      @closed="oneKeyTokenplanKey = ''"
+    >
+      <div class="one-key-help">
+        <div class="one-key-section">
+          <div class="one-key-section-title">📋 将自动创建以下配置</div>
+          <ul class="one-key-list">
+            <li><b>文本/对话</b>：千问（qwen3.7-plus）— 生成故事剧本</li>
+            <li><b>文本生成图片</b>：万相（wan2.7-image）— 角色/场景/道具图</li>
+            <li><b>分镜图片生成</b>：万相（wan2.7-image）— 支持角色参考图</li>
+            <li><b>视频生成</b>：HappyHorse（happyhorse-1.1-t2v）— 生成视频片段</li>
+          </ul>
+        </div>
+        <div class="one-key-section">
+          <div class="one-key-section-title">🔑 如何获取 API Key</div>
+          <ol class="one-key-list">
+            <li>前往阿里云百炼控制台：<a href="https://bailian.console.aliyun.com/" target="_blank" class="one-key-link">bailian.console.aliyun.com</a></li>
+            <li>注册/登录阿里云账号，购买「个人 TokenPlan」套餐</li>
+            <li>在「API Key 管理」→「创建 API Key」，复制 Key（格式：<code>sk-xxxxxxxx</code>）填入下方</li>
+          </ol>
+          <p class="one-key-note">💡 TokenPlan 使用专属 Base URL，与官方 DashScope 互不通用</p>
+        </div>
+      </div>
+      <el-form label-width="0" style="margin-top: 8px">
+        <el-form-item>
+          <el-input
+            v-model="oneKeyTokenplanKey"
+            type="password"
+            placeholder="请输入阿里云百炼 API Key，格式：sk-xxxxxxxx"
+            show-password-on="click"
+            clearable
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="oneKeyTokenplanVisible = false">取消</el-button>
+        <el-button type="success" :loading="oneKeyTokenplanSaving" :disabled="!oneKeyTokenplanKey.trim()" @click="submitOneKeyTokenplan">
+          确定，一键创建配置
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 即梦2角色认证：素材列表 -->
     <el-dialog
       v-model="jimeng2AssetsDialogVisible"
@@ -1102,6 +1158,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
+import LogViewer from '@/components/LogViewer.vue'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
@@ -1291,6 +1348,9 @@ const oneKeyVolcSaving = ref(false)
 const oneKeyAgnesVisible = ref(false)
 const oneKeyAgnesKey = ref('')
 const oneKeyAgnesSaving = ref(false)
+const oneKeyTokenplanVisible = ref(false)
+const oneKeyTokenplanKey = ref('')
+const oneKeyTokenplanSaving = ref(false)
 
 /** 预设厂商与模型（与参考前端一致） */
 const providerConfigs = {
@@ -1301,7 +1361,8 @@ const providerConfigs = {
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-pro', 'gemini-3-flash-preview'] },
     { id: 'deepseek', name: 'DeepSeek', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
     { id: 'qwen', name: '通义千问', models: ['qwen3-max', 'qwen-plus', 'qwen-flash'] },
-    { id: 'agnes', name: 'Agnes AI', models: ['agnes-2.0-flash'] }
+    { id: 'agnes', name: 'Agnes AI', models: ['agnes-2.0-flash'] },
+    { id: 'tokenplan', name: '阿里云百炼 TokenPlan', models: ['qwen3.8-max-preview', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.6-flash'] }
   ],
   image: [
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
@@ -1312,7 +1373,8 @@ const providerConfigs = {
     { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'qwen_image', name: '通义千问', models: ['qwen-image-max', 'qwen-image-plus', 'qwen-image'] },
-    { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
+    { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] },
+    { id: 'tokenplan', name: '阿里云百炼 TokenPlan', models: ['wan2.7-image', 'wan2.7-image-pro'] }
   ],
   storyboard_image: [
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
@@ -1322,7 +1384,8 @@ const providerConfigs = {
     // { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
     { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
-    { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
+    { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] },
+    { id: 'tokenplan', name: '阿里云百炼 TokenPlan', models: ['wan2.7-image', 'wan2.7-image-pro'] }
   ],
   video: [
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1349,6 +1412,7 @@ const providerConfigs = {
     { id: 'openai', name: 'OpenAI', models: ['sora-2', 'sora-2-pro'] },
     { id: 'xai', name: 'xAI Grok Imagine', models: ['grok-imagine-video'] },
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-video-v2.0'] },
+    { id: 'tokenplan', name: '阿里云百炼 TokenPlan (HappyHorse)', models: ['happyhorse-1.1-t2v', 'happyhorse-1.1-i2v', 'happyhorse-1.1-r2v'] }
   ],
   tts: [
     { id: 'minimax', name: 'MiniMax T2A', models: ['speech-02-hd', 'speech-02-turbo'] },
@@ -1382,6 +1446,7 @@ const providerProtocolMap = {
   qwen: 'openai',
   deepseek: 'openai',
   agnes: 'openai',
+  tokenplan: 'openai',
   jimeng_ai_api: 'jimeng_ai_api',
   jimeng_material_api: '',
 }
@@ -1407,6 +1472,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'jimeng_material_api') return 'https://silvamux.tingyutech.com'
   if (p === 'xai' || p === 'grok') return 'https://api.x.ai'
   if (p === 'agnes') return 'https://apihub.agnes-ai.com/v1'
+  if (p === 'tokenplan') return 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
   return 'https://api.chatfire.site/v1'
 }
 
@@ -1636,6 +1702,18 @@ function onProviderChange(providerId) {
   }
   // 自动填充接口规范
   form.value.api_protocol = providerProtocolMap[providerId] || (st === 'text' ? '' : 'openai')
+  // TokenPlan：图片/分镜图用 dashscope 协议，文本/视频用 openai
+  if (providerId === 'tokenplan') {
+    if (st === 'image' || st === 'storyboard_image') {
+      form.value.api_protocol = 'dashscope'
+      form.value.base_url = 'https://token-plan.cn-beijing.maas.aliyuncs.com'
+      form.value.endpoint = '/api/v1/services/aigc/multimodal-generation/generation'
+    } else if (st === 'video') {
+      form.value.api_protocol = 'dashscope'
+      form.value.base_url = 'https://token-plan.cn-beijing.maas.aliyuncs.com'
+      form.value.endpoint = '/api/v1/services/aigc/video-generation/video-synthesis'
+    }
+  }
   if (st === 'video' && providerId === 'jimeng_ai_api') {
     form.value.endpoint = ''
     form.value.query_endpoint = ''
@@ -1682,6 +1760,14 @@ const AGNES_CONFIGS = [
   { service_type: 'image', name: 'Agnes 文本生图', base_url: 'https://apihub.agnes-ai.com/v1', provider: 'agnes', api_protocol: 'openai', model: ['agnes-image-2.1-flash'] },
   { service_type: 'storyboard_image', name: 'Agnes 分镜图', base_url: 'https://apihub.agnes-ai.com/v1', provider: 'agnes', api_protocol: 'openai', model: ['agnes-image-2.1-flash'] },
   { service_type: 'video', name: 'Agnes 视频', base_url: 'https://apihub.agnes-ai.com/v1', provider: 'agnes', api_protocol: 'agnes', endpoint: '/videos', query_endpoint: '/videos/{taskId}', model: ['agnes-video-v2.0'] },
+]
+
+/** 阿里云百炼 TokenPlan 一键配置用 */
+const TOKENPLAN_CONFIGS = [
+  { service_type: 'text', name: 'TokenPlan 千问(Qwen)', base_url: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', provider: 'tokenplan', api_protocol: 'openai', model: ['qwen3.8-max-preview', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3.6-flash'] },
+  { service_type: 'image', name: 'TokenPlan 万相(Wan) 文本生图', base_url: 'https://token-plan.cn-beijing.maas.aliyuncs.com', provider: 'tokenplan', api_protocol: 'dashscope', endpoint: '/api/v1/services/aigc/multimodal-generation/generation', model: ['wan2.7-image', 'wan2.7-image-pro'] },
+  { service_type: 'storyboard_image', name: 'TokenPlan 万相(Wan) 分镜图', base_url: 'https://token-plan.cn-beijing.maas.aliyuncs.com', provider: 'tokenplan', api_protocol: 'dashscope', endpoint: '/api/v1/services/aigc/multimodal-generation/generation', model: ['wan2.7-image', 'wan2.7-image-pro'] },
+  { service_type: 'video', name: 'TokenPlan HappyHorse 视频', base_url: 'https://token-plan.cn-beijing.maas.aliyuncs.com', provider: 'tokenplan', api_protocol: 'dashscope', model: ['happyhorse-1.1-t2v', 'happyhorse-1.1-i2v', 'happyhorse-1.1-r2v'] },
 ]
 
 function serviceTypeLabel(t) {
@@ -2124,6 +2210,43 @@ async function submitOneKeyAgnes() {
   }
 }
 
+function openOneKeyTokenplan() {
+  oneKeyTokenplanKey.value = ''
+  oneKeyTokenplanVisible.value = true
+}
+
+async function submitOneKeyTokenplan() {
+  const apiKey = oneKeyTokenplanKey.value.trim()
+  if (!apiKey) return
+  oneKeyTokenplanSaving.value = true
+  try {
+    for (const cfg of TOKENPLAN_CONFIGS) {
+      const models = cfg.model || []
+      await aiAPI.create({
+        service_type: cfg.service_type,
+        name: cfg.name,
+        provider: cfg.provider,
+        api_protocol: cfg.api_protocol || '',
+        base_url: cfg.base_url,
+        api_key: apiKey,
+        model: models,
+        default_model: models[0] || null,
+        endpoint: cfg.endpoint || '',
+        query_endpoint: cfg.query_endpoint || '',
+        priority: 10,
+        is_default: true
+      })
+    }
+    ElMessage.success('已创建 TokenPlan 文本、文本生图、分镜图、视频配置')
+    oneKeyTokenplanVisible.value = false
+    await loadList()
+  } catch (_) {
+    // 错误已由 request 统一提示
+  } finally {
+    oneKeyTokenplanSaving.value = false
+  }
+}
+
 async function exportConfigs() {
   try {
     const configs = await aiAPI.list()
@@ -2223,7 +2346,6 @@ onMounted(() => {
 }
 .tab-content {
   padding-top: 16px;
-  max-height: calc(100vh - 320px);
   overflow-y: auto;
 }
 .content-actions {

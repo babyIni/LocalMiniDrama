@@ -113,8 +113,8 @@ html.light .logo-sub {
 }
 html.light .page-title { color: #6b7280; }
 .main {
-  max-width: 1200px;
-  margin: 24px auto;
+  max-width: 100%;
+  margin: 16px;
   background: rgba(24, 24, 27, 0.75);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);

@@ -9,6 +9,7 @@ const taskService = require('./taskService');
 const { loadConfig } = require('../config');
 const { postJSONWithTimeout } = require('./aiClient');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
+const logService = require('./logService');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -88,8 +89,9 @@ function getProxyExpireHours() {
  * 根据 provider 名推断接口规范（api_protocol 未设置时的兜底逻辑）
  * 已明确设置 api_protocol 的配置不会走此函数。
  */
-function inferProtocol(provider, model) {
+function inferProtocol(provider, model, baseUrl) {
   const p = String(provider || '').toLowerCase();
+  const base = String(baseUrl || '').toLowerCase();
   if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
   if (p === 'nano_banana') return 'nano_banana';
   if (p === 'gemini' || p === 'google') return 'gemini';
@@ -98,6 +100,8 @@ function inferProtocol(provider, model) {
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (/^kling-/i.test(model || '')) return 'kling';
   if (p === 'agnes' || /agnes-image|apihub\.agnes-ai\.com/i.test(String(model || ''))) return 'agnes';
+  // TokenPlan 的万相模型走 DashScope 原生协议
+  if (base.includes('token-plan') && /^wan/i.test(String(model || ''))) return 'dashscope';
   return 'openai';
 }
 
@@ -855,7 +859,7 @@ async function callDashScopeImageApi(config, log, opts) {
   const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path, negative_prompt } = opts;
   const base = (config.base_url || '').replace(/\/$/, '');
   const url = base + (config.endpoint || '/api/v1/services/aigc/multimodal-generation/generation');
-  if (!url.includes('dashscope')) {
+  if (!url.includes('dashscope') && !url.includes('token-plan')) {
     return { error: '通义万象 base_url 需为 https://dashscope.aliyuncs.com' };
   }
   const isQwenImage = isQwenImageProvider(config, model);
@@ -939,7 +943,9 @@ async function callDashScopeImageApi(config, log, opts) {
   });
 
   const hasRefs = content.length > 1;
-  const stream = !hasRefs; // enable_interleave=false 时必须 stream=false
+  // TokenPlan 不支持 stream/SSE 模式，强制同步；其他 DashScope 兼容服务有参考图时也用同步
+  const isTokenPlan = url.includes('token-plan');
+  const stream = !isTokenPlan && !hasRefs;
   const body = {
     model: model || 'wan2.6-image',
     input: {
@@ -951,7 +957,7 @@ async function callDashScopeImageApi(config, log, opts) {
       n: 1,
       enable_interleave: !hasRefs,
       size: dashScopeSize(size),
-      stream,
+      ...(stream ? { stream: true } : {}),
       // 多张参考图时注入 negative_prompt，防止生成分割/拼贴布局
       ...(hasRefs ? { negative_prompt: negative_prompt || ANTI_SPLIT_NEGATIVE_PROMPT } : (negative_prompt ? { negative_prompt } : {})),
     },
@@ -1394,6 +1400,69 @@ async function callGeminiImageApi(db, config, log, opts) {
  * @param {object} opts - { prompt, model?, size?, quality?, drama_id, preferred_provider?, character_id?, image_type?, image_gen_id, user_negative_prompt? }
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
+/** MiniMax image-01 文生图（同步，返回 url） */
+async function callMiniMaxImageApi(config, log, opts) {
+  const { prompt, model, size, image_gen_id } = opts;
+  const base = (config.base_url || 'https://api.minimaxi.com/v1').replace(/\/$/, '');
+  const url = base + (config.endpoint || '/image_generation');
+  // MiniMax image-01 要求 prompt 不超过 1500 字符，且 aspect_ratio 仅支持特定值
+  const truncatedPrompt = (prompt || '').slice(0, 1490);
+  // 将 WxH 像素值映射到 MiniMax 支持的宽高比
+  const MINIMAX_RATIOS = ['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'];
+  const resizeRatio = (s) => {
+    if (!s || typeof s !== 'string') return '16:9';
+    const str = s.toLowerCase().replace(/\*/g, 'x');
+    const m = str.match(/^(\d+)\s*x\s*(\d+)$/);
+    if (!m) return '16:9';
+    const w = parseInt(m[1], 10);
+    const h = parseInt(m[2], 10);
+    if (!w || !h) return '16:9';
+    const ratio = w / h;
+    let closest = '16:9';
+    let minDiff = Infinity;
+    for (const r of MINIMAX_RATIOS) {
+      const parts = r.split(':');
+      const target = parseInt(parts[0], 10) / parseInt(parts[1], 10);
+      const diff = Math.abs(ratio - target);
+      if (diff < minDiff) { minDiff = diff; closest = r; }
+    }
+    return closest;
+  };
+  const body = {
+    model: model || 'image-01',
+    prompt: truncatedPrompt,
+    aspect_ratio: resizeRatio(size),
+    response_format: 'url',
+    n: 1,
+    prompt_optimizer: true,
+  };
+  log.info('Image API request (MiniMax)', { url: url.slice(0, 70), model: body.model, image_gen_id });
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: 'Bearer ' + (config.api_key || ''),
+  };
+  try {
+    const out = await postJSONWithTimeout(url, headers, body, 120000);
+    if (out.statusCode < 200 || out.statusCode >= 300) {
+      let errMsg = '图片生成请求失败: ' + out.statusCode;
+      try {
+        const errJson = JSON.parse(out.raw);
+        if (errJson.message) errMsg += ' - ' + errJson.message;
+        else if (errJson.base_resp?.status_msg) errMsg += ' - ' + errJson.base_resp.status_msg;
+      } catch (_) { if (out.raw) errMsg += ' - ' + out.raw.slice(0, 200); }
+      log.error('MiniMax create failed', { status: out.statusCode, body: out.raw.slice(0, 300), image_gen_id });
+      return { error: errMsg };
+    }
+    const data = JSON.parse(out.raw);
+    const imageUrl = data?.data?.image_urls?.[0] || data?.data?.[0]?.url || data?.image_url || data?.url;
+    if (imageUrl) return { image_url: imageUrl };
+    return { error: 'MiniMax 未返回图片地址: ' + JSON.stringify(data).slice(0, 300) };
+  } catch (e) {
+    log.error('MiniMax network error', { image_gen_id, error: e.message });
+    return { error: '图片生成网络请求失败: ' + e.message };
+  }
+}
+
 async function callImageApi(db, log, opts) {
   const {
     prompt,
@@ -1420,7 +1489,12 @@ async function callImageApi(db, log, opts) {
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
-  const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
+  let protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model, config.base_url);
+  // TokenPlan 强制 DashScope 协议（无论配置怎么写，因为万相模型只认 DashScope 格式）
+  const tokenplanBaseUrl = String(config.base_url || '');
+  if (tokenplanBaseUrl.includes('token-plan') && /^wan/i.test(model)) {
+    protocol = 'dashscope';
+  }
 
   // ── 参考图标签注入：为所有非 Gemini 模型将标签注入 prompt 文本 ─────────────────────────────
   // Gemini 通过 parts 结构处理（interleaved text+image），不需要文字注入。
@@ -1454,6 +1528,24 @@ async function callImageApi(db, log, opts) {
     effectivePrompt
   });
 
+  // 日志辅助：在子调用返回后记录 AI 模型调用日志
+  const imageStartMs = Date.now();
+  const logImageResult = (errMsg, reqDetail, respDetail) => {
+    logService.logAiModelCall(db, log, {
+      service_type: imageServiceType || 'image',
+      model,
+      provider: config.provider || '',
+      prompt_summary: (effectivePrompt || '').slice(0, 120),
+      status: errMsg ? 'failed' : 'completed',
+      error_message: errMsg || '',
+      duration_ms: Date.now() - imageStartMs,
+      entity_type: image_gen_id ? 'image_gen' : undefined,
+      entity_id: image_gen_id,
+      request_detail: reqDetail || undefined,
+      response_detail: respDetail || undefined,
+    });
+  };
+
   // 多参考图时统一生成 negative_prompt（供各子函数使用）
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
   // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
@@ -1462,42 +1554,93 @@ async function callImageApi(db, log, opts) {
   const userNegFragment = (user_negative_prompt && String(user_negative_prompt).trim()) || '';
   const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
 
+  // 为每个子调用构建请求详情（URL + body 摘要），以便日志记录最终请求路径和参数
+  const buildSubReqDetail = (subUrl, subBody) => {
+    const preview = subBody ? JSON.stringify(subBody).slice(0, 500) : '';
+    return { url: subUrl, method: 'POST', body_preview: preview };
+  };
+  const buildSubRespDetail = (subResult) => {
+    if (!subResult) return null;
+    return { result: subResult.error ? 'error' : 'success', error: subResult.error || null, image_url: subResult.image_url || null };
+  };
+
   if (protocol === 'dashscope') {
-    return callDashScopeImageApi(config, log, {
+    const dsBase = (config.base_url || '').replace(/\/$/, '');
+    const dsUrl = dsBase + (config.endpoint || '/api/v1/services/aigc/multimodal-generation/generation');
+    const dsBody = { model, input: { messages: [{ role: 'user', content: [{ text: effectivePrompt }] }] }, parameters: { n: 1, size: (size || '1280*1280').toLowerCase().replace('x', '*'), watermark: false } };
+    const reqDetail = buildSubReqDetail(dsUrl, dsBody);
+    const result = await callDashScopeImageApi(config, log, {
       prompt: effectivePrompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
       negative_prompt: mergedNegativePrompt,
     });
+    logImageResult(result?.error, reqDetail, buildSubRespDetail(result));
+    return result;
   }
 
   if (protocol === 'nano_banana') {
-    return callNanoBananaImageApi(config, log, {
+    const nbUrl = buildImageUrl(config);
+    const nbBody = { model, prompt: effectivePrompt, size };
+    const reqDetail = buildSubReqDetail(nbUrl, nbBody);
+    const result = await callNanoBananaImageApi(config, log, {
       prompt: effectivePrompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
+    logImageResult(result?.error, reqDetail, buildSubRespDetail(result));
+    return result;
   }
 
   if (protocol === 'kling') {
-    return callKlingImageApi(config, log, {
+    const klUrl = buildImageUrl(config);
+    const klBody = { model, prompt: effectivePrompt, size };
+    const reqDetail = buildSubReqDetail(klUrl, klBody);
+    const result = await callKlingImageApi(config, log, {
       prompt: effectivePrompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
+    logImageResult(result?.error, reqDetail, buildSubRespDetail(result));
+    return result;
   }
 
   if (protocol === 'gemini') {
-    return callGeminiImageApi(db, config, log, {
-      prompt, model, size, image_gen_id,          // Gemini 用原始 prompt，不注入文字标签
+    const gmBase = (config.base_url || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
+    const gmModel = model || 'gemini-2.5-flash-image';
+    const gmUrl = `${gmBase}/v1beta/models/${gmModel}:generateContent?key=${(config.api_key || '').slice(0, 8)}...`;
+    const gmBody = { model: gmModel, prompt };
+    const reqDetail = buildSubReqDetail(gmUrl, gmBody);
+    const result = await callGeminiImageApi(db, config, log, {
+      prompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
       system_prompt: opts.system_prompt,
     });
+    logImageResult(result?.error, reqDetail, buildSubRespDetail(result));
+    return result;
+  }
+
+  // MiniMax image-01：专用格式（aspect_ratio + response_format + prompt_optimizer，不用 size）
+  if (provider.includes('minimax') || String(config.base_url || '').toLowerCase().includes('minimaxi.com')) {
+    const mmUrl = buildImageUrl(config);
+    // 日志 body_preview 使用简化 ratio 并截短 prompt，确保关键字段可见
+    const mmLogBody = {
+      model,
+      prompt: (effectivePrompt || '').slice(0, 80) + '…',
+      aspect_ratio: 'auto',
+      response_format: 'url',
+      n: 1,
+      prompt_optimizer: true,
+    };
+    const reqDetail = buildSubReqDetail(mmUrl, mmLogBody);
+    const result = await callMiniMaxImageApi(config, log, { prompt: effectivePrompt, model, size, image_gen_id });
+    logImageResult(result?.error, reqDetail, buildSubRespDetail(result));
+    return result;
   }
 
   const url = buildImageUrl(config);
@@ -1553,15 +1696,19 @@ async function callImageApi(db, log, opts) {
   };
   let raw;
   let httpStatus;
+  const buildReqDetail = () => ({ url, method: 'POST', body_preview: JSON.stringify(body).slice(0, 500) });
+  const buildRespDetail = () => ({ status_code: httpStatus, body_preview: (raw || '').slice(0, 500) });
   try {
     const out = await postJSONWithTimeout(url, openaiCompatHeaders, body, IMAGE_HTTP_TIMEOUT_MS);
     httpStatus = out.statusCode;
     raw = out.raw;
   } catch (e) {
     log.error('Image API network error', { image_gen_id, error: e.message, url: url.slice(0, 80) });
-    return { error: e.message && e.message.includes('timeout')
+    const errMsg1 = e.message && e.message.includes('timeout')
       ? e.message
-      : ('图片生成网络请求失败: ' + e.message) };
+      : ('图片生成网络请求失败: ' + e.message);
+    logImageResult(errMsg1, buildReqDetail(), { status: 'network_error', error: e.message });
+    return { error: errMsg1 };
   }
   if (httpStatus < 200 || httpStatus >= 300) {
     log.error('Image API failed', { status: httpStatus, body: raw.slice(0, 300) });
@@ -1573,6 +1720,7 @@ async function callImageApi(db, log, opts) {
     } catch (_) {
       if (raw && raw.length) errMsg += ' - ' + raw.slice(0, 200);
     }
+    logImageResult(errMsg, buildReqDetail(), buildRespDetail());
     return { error: errMsg };
   }
   let data;
@@ -1580,6 +1728,7 @@ async function callImageApi(db, log, opts) {
     data = JSON.parse(raw);
   } catch (e) {
     log.warn('Image API response parse error', { image_gen_id, raw_preview: raw.slice(0, 200) });
+    logImageResult('图片生成返回格式异常', buildReqDetail(), buildRespDetail());
     return { error: '图片生成返回格式异常' };
   }
   // 兼容多种返回格式：OpenAI 风格 data[].url / b64_json，部分厂商 data[].image_url 或 data.output 等
@@ -1604,8 +1753,10 @@ async function callImageApi(db, log, opts) {
       has_data_array: !!(data.data && Array.isArray(data.data)),
       first_item_keys: (data.data && data.data[0]) ? Object.keys(data.data[0]) : [],
     });
+    logImageResult('未返回图片地址', buildReqDetail(), { status_code: httpStatus, body_preview: (raw || '').slice(0, 500) });
     return { error: '未返回图片地址' };
   }
+  logImageResult(null, buildReqDetail(), { status_code: httpStatus, body_preview: (raw || '').slice(0, 500) });
   return { image_url: imageUrl };
 }
 
